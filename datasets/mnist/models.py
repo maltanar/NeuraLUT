@@ -26,7 +26,10 @@ from brevitas.core.quant import QuantType
 from brevitas.core.scaling import ParameterScaling
 from brevitas.nn import QuantHardTanh, QuantReLU, QuantIdentity
 
-from pyverilator import PyVerilator
+try:
+    from pyverilator import PyVerilator
+except Exception:
+    PyVerilator = None
 
 from neuralut.quant import QuantBrevitasActivation
 from neuralut.nn import (
@@ -266,6 +269,11 @@ class MnistNeqModel(nn.Module):
         logfile: bool = False,
         add_registers: bool = False,
     ):
+        if PyVerilator is None:
+            raise RuntimeError(
+                "PyVerilator is unavailable. Install optional hardware dependencies "
+                "(including tkinter and verilator) to enable verilog inference."
+            )
         self.verilog_dir = realpath(verilog_dir)
         self.top_module_filename = top_module_filename
         self.dut = PyVerilator.build(

@@ -40,7 +40,10 @@ other_options = {
     "log_dir": None,
     "checkpoint": None,
     "imask": None,
-    "add_registers": False
+    "add_registers": False,
+    "skip_verilog_gen": False,
+    "skip_verilog": False,
+    "skip_synthesis": False,
 }
 
 if __name__ == "__main__":
@@ -182,6 +185,24 @@ if __name__ == "__main__":
         default=False,
         help="Train on a GPU (default: %(default)s)",
     )
+    parser.add_argument(
+        "--skip-verilog",
+        action="store_true",
+        default=False,
+        help="Skip verilog simulation even after verilog generation (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--skip-verilog-gen",
+        action="store_true",
+        default=False,
+        help="Skip verilog generation and any downstream verilog/synthesis steps (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--skip-synthesis",
+        action="store_true",
+        default=False,
+        help="Skip Vivado synthesis stage (default: %(default)s)",
+    )
     args = parser.parse_args()
     defaults = configs[args.arch]
     options = vars(args)
@@ -226,7 +247,8 @@ if __name__ == "__main__":
     # Instantiate the PyTorch model
     model_cfg["input_length"] = 784
     model_cfg["output_length"] = 10
-    model_cfg["imask"] = torch.load(options_cfg["imask"], map_location="cuda:{}".format(options_cfg["device"]))
+    map_loc = "cuda:{}".format(options_cfg["device"]) if options_cfg["cuda"] else "cpu"
+    model_cfg["imask"] = torch.load(options_cfg["imask"], map_location=map_loc)
     model_cfg['dense_forward'] = False
     
     model = MnistNeqModel(model_cfg)
@@ -234,7 +256,7 @@ if __name__ == "__main__":
         model.cuda()
 
     # Load the model weights
-    checkpoint = torch.load(options_cfg["checkpoint"], map_location="cuda:{}".format(options_cfg["device"]) if options_cfg["cuda"] else "cpu")
+    checkpoint = torch.load(options_cfg["checkpoint"], map_location=map_loc)
     model.load_state_dict(checkpoint["model_dict"])
 
     # Test the PyTorch model
@@ -259,22 +281,35 @@ if __name__ == "__main__":
     modelSave = {"model_dict": lut_model.state_dict(), "test_accuracy": lut_accuracy}
     torch.save(modelSave, options_cfg["log_dir"] + "/lut_based_model.pth")
     
-    print("Generating verilog in %s..." % (options_cfg["log_dir"]))
-    module_list_to_verilog_module(
-        lut_model.module_list,
-        "neuralut",
-        options_cfg["log_dir"],
-        add_registers=options_cfg["add_registers"],
-    )
-    print("Top level entity stored at: %s/neuralut.v ..." % (options_cfg["log_dir"]))
+    if not options_cfg["skip_verilog_gen"]:
+        print("Generating verilog in %s..." % (options_cfg["log_dir"]))
+        module_list_to_verilog_module(
+            lut_model.module_list,
+            "neuralut",
+            options_cfg["log_dir"],
+            add_registers=options_cfg["add_registers"],
+        )
+        print("Top level entity stored at: %s/neuralut.v ..." % (options_cfg["log_dir"]))
+    else:
+        print("Skipping verilog generation (--skip-verilog-gen).")
 
-    io_filename = None
-    print("Running inference simulation of Verilog-based model...")
-    lut_model.verilog_inference(options_cfg["log_dir"], "neuralut.v", logfile=io_filename, add_registers=options_cfg["add_registers"])
-    print("Testing Verilog-Based Model")
-    verilog_accuracy = test(lut_model, test_loader, cuda=options_cfg["cuda"])
-    print("Verilog-Based Model accuracy: %f" % (verilog_accuracy))
+    if options_cfg["skip_verilog_gen"]:
+        print("Skipping verilog simulation because verilog generation was skipped.")
+    elif not options_cfg["skip_verilog"]:
+        io_filename = None
+        print("Running inference simulation of Verilog-based model...")
+        lut_model.verilog_inference(options_cfg["log_dir"], "neuralut.v", logfile=io_filename, add_registers=options_cfg["add_registers"])
+        print("Testing Verilog-Based Model")
+        verilog_accuracy = test(lut_model, test_loader, cuda=options_cfg["cuda"])
+        print("Verilog-Based Model accuracy: %f" % (verilog_accuracy))
+    else:
+        print("Skipping verilog simulation (--skip-verilog).")
 
-    print("Running out-of-context synthesis")
-    ret = synthesize_and_get_resource_counts(options_cfg["log_dir"], "neuralut", fpga_part='xcvu9p-flgb2104-2-i', clk_period_ns='1.1', post_synthesis=1)
-    print("Max f: " + str(ret))
+    if options_cfg["skip_verilog_gen"]:
+        print("Skipping synthesis because verilog generation was skipped.")
+    elif not options_cfg["skip_synthesis"]:
+        print("Running out-of-context synthesis")
+        ret = synthesize_and_get_resource_counts(options_cfg["log_dir"], "neuralut", fpga_part='xcvu9p-flgb2104-2-i', clk_period_ns='1.1', post_synthesis=1)
+        print("Max f: " + str(ret))
+    else:
+        print("Skipping synthesis (--skip-synthesis).")

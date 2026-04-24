@@ -62,7 +62,7 @@ def get_float_state_space(
 # TODO: Add an abstract class with a specific interface which all brevitas-based classes inherit from?
 class QuantBrevitasActivation(nn.Module):
     def __init__(
-        self, brevitas_module, pre_transforms: list = [], post_transforms: list = [], cuda: bool = True
+        self, brevitas_module, pre_transforms: list = [], post_transforms: list = [], cuda: bool = False
     ):
         super(QuantBrevitasActivation, self).__init__()
         self.brevitas_module = brevitas_module
@@ -198,7 +198,8 @@ class QuantBrevitasActivation(nn.Module):
 
     def forward(self, x):
         if self.is_bin_output:
-            s, _ = self.get_scale_factor_bits(self.cuda)
+            is_cuda = x.is_cuda
+            s, _ = self.get_scale_factor_bits(is_cuda)
             x = self.apply_pre_transforms(x)
             x = self.brevitas_module(x)
             x = torch.round(x / s).type(torch.int64)
