@@ -343,7 +343,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cuda",
         action="store_true",
-        default=True,
+        default=False,
         help="Train on a GPU (default: %(default)s)",
     )
     parser.add_argument(
@@ -548,14 +548,16 @@ if __name__ == "__main__":
     model_cfg["input_length"] = 784
     model_cfg["output_length"] = 10
     model_cfg['dense_forward'] = True
-    model_cfg['imask'] = torch.tensor([]).cuda()
+    model_cfg['imask'] = torch.tensor([])
+    if options_cfg["cuda"]:
+        model_cfg['imask'] = model_cfg['imask'].cuda()
 
     model_dense = MnistNeqModel(model_cfg)
     train(model_dense, train_cfg, options_cfg)
     imask = GetInputMask(model_dense, options_cfg["cuda"])
 
     model_cfg['dense_forward'] = False
-    model_cfg['imask'] = imask.cuda()
+    model_cfg['imask'] = imask.cuda() if options_cfg["cuda"] else imask
     
     model = MnistNeqModel(model_cfg)
     torch.save(imask, "test_" + options_cfg["log_dir"] + "/imask.pth")

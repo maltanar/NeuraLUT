@@ -7,10 +7,28 @@ import os
 from argparse import ArgumentParser
 
 import torch
+import torch.nn as nn
 from brevitas.export import export_qonnx
 
 from models import MnistNeqModel
 from train import configs, model_config
+
+
+class MnistPreprocessWrapper(nn.Module):
+    """Wrapper that adds preprocessing (normalization) to the MNIST model."""
+    
+    def __init__(self, model, mean=0.1307, std=0.3081):
+        super().__init__()
+        self.model = model
+        # Register as buffers so they move with model (CPU/GPU)
+        self.register_buffer('mean', torch.tensor(mean))
+        self.register_buffer('std', torch.tensor(std))
+    
+    def forward(self, x):
+        # Apply MNIST normalization: (x - mean) / std
+        # Input x should be in range [0, 1] (post-ToTensor)
+        x_normalized = (x - self.mean) / self.std
+        return self.model(x_normalized)
 
 
 def main():
@@ -58,6 +76,12 @@ def main():
         default=False,
         help="Export with CUDA model/input tensors (default: %(default)s)",
     )
+    parser.add_argument(
+        "--with-preprocessing",
+        action="store_true",
+        default=False,
+        help="Include normalization preprocessing in the ONNX model (default: %(default)s)",
+    )
     args = parser.parse_args()
 
     defaults = configs[args.arch]
@@ -81,6 +105,11 @@ def main():
     model.load_state_dict(checkpoint["model_dict"])
     model.eval()
 
+    # Optionally wrap model with preprocessing
+    if args.with_preprocessing:
+        model = MnistPreprocessWrapper(model)
+        model.eval()
+
     input_t = torch.randn(args.batch_size, model_cfg["input_length"])
     if args.cuda:
         input_t = input_t.cuda()
@@ -92,7 +121,11 @@ def main():
     # torch.onnx exporter in newer torch versions can bypass Brevitas QONNX ops;
     # dynamo=False keeps the legacy export path that correctly emits QONNX nodes.
     export_qonnx(model, input_t, export_path=args.output, dynamo=False)
-    print(f"Exported QONNX model to: {args.output}")
+    
+    if args.with_preprocessing:
+        print(f"Exported QONNX model with preprocessing to: {args.output}")
+    else:
+        print(f"Exported QONNX model to: {args.output}")
 
 
 if __name__ == "__main__":
