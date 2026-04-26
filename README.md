@@ -57,11 +57,7 @@ pip install torch==2.4.0 torchvision==0.19.0
 
 ### 2. Install Brevitas
 
-```bash
-conda install -y packaging pyparsing
-conda install -y docrep -c conda-forge
-pip install --no-cache-dir git+https://github.com/Xilinx/brevitas.git@67be9b58c1c63d3923cac430ade2552d0db67ba5
-```
+Brevitas 0.10.2 is now part of project dependencies in the next step and does not have to be separately installed.
 
 ### 3. Install Project Dependencies
 
