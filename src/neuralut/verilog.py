@@ -63,22 +63,34 @@ assign {input_string}w = {input_string};\n"""
                                                 output_string=output_string,
                                                 output_bits_1=output_bits-1)
 
-def generate_lut_verilog(module_name, input_fanin_bits, output_bits, lut_string):
-    lut_neuron_template = """\
-module {module_name} ( input [{input_fanin_bits_1:d}:0] M0, output [{output_bits_1:d}:0] M1 );
+def _format_lut_hex(val, num_hex_digits):
+    s = f"{val:0{num_hex_digits}X}"
+    return "_".join(s[i:i+4] for i in range(0, len(s), 4))
 
-	(*rom_style = "distributed" *) reg [{output_bits_1:d}:0] M1r;
-	assign M1 = M1r;
-	always @ (M0) begin
-		case (M0)
-{lut_string}
-		endcase
-	end
-endmodule\n"""
-    return lut_neuron_template.format(  module_name=module_name,
-                                        input_fanin_bits_1=input_fanin_bits-1,
-                                        output_bits_1=output_bits-1,
-                                        lut_string=lut_string)
+def generate_lut_verilog(module_name, input_fanin_bits, output_bits, lut_values):
+    """Generate a compact LUT module using hex literals.
+
+    lut_values: list of integers, one per output bit (LSB first).
+    lut_values[j] has bit i set iff the output bit j is 1 when M0 == i.
+    """
+    num_entries = 1 << input_fanin_bits
+    hex_digits = num_entries // 4
+    lines = []
+    if output_bits == 1:
+        formatted = _format_lut_hex(lut_values[0], hex_digits)
+        lines.append(f"    wire [{num_entries-1}:0] lut = {num_entries}'h{formatted};")
+        lines.append(f"    assign M1 = lut[M0];")
+    else:
+        for j in range(output_bits):
+            formatted = _format_lut_hex(lut_values[j], hex_digits)
+            lines.append(f"    wire [{num_entries-1}:0] lut_{j} = {num_entries}'h{formatted};")
+        for j in range(output_bits):
+            lines.append(f"    assign M1[{j}] = lut_{j}[M0];")
+    body = "\n".join(lines)
+    return (
+        f"module {module_name} ( input [{input_fanin_bits-1}:0] M0, output [{output_bits-1}:0] M1 );\n\n"
+        f"{body}\n\nendmodule\n"
+    )
 
 def generate_neuron_connection_verilog(input_indices, input_bitwidth):
     connection_string = ""

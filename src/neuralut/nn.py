@@ -37,6 +37,7 @@ from .verilog import (
     layer_connection_verilog,
     generate_logicnets_verilog,
     generate_register_verilog,
+    _format_lut_hex,
 )
 from .bench import generate_lut_bench, generate_lut_input_string, sort_to_bench
 
@@ -190,6 +191,36 @@ class SparseLinearNeq(nn.Module):
     # TODO: Move the verilog string templates to elsewhere
     # TODO: Move this to another class
     # TODO: Update this code to support custom bitwidths per input/output
+    def _compute_lut_values(self, index):
+        """Return (cat_input_bitwidth, output_bits, lut_values) for neuron `index`.
+
+        lut_values is a list of packed integers, one per output bit.
+        """
+        (
+            indices,
+            input_perm_matrix,
+            _float_output_states,
+            bin_output_states,
+        ) = self.neuron_truth_tables[index]
+        _, input_bitwidth = self.input_quant.get_scale_factor_bits(self.cuda)
+        _, output_bitwidth = self.output_quant.get_scale_factor_bits(self.cuda)
+        cat_input_bitwidth = int(len(indices) * input_bitwidth)
+        output_bits = int(output_bitwidth)
+        num_entries = input_perm_matrix.shape[0]
+        lut_values = [0] * output_bits
+        for i in range(num_entries):
+            entry_str = ""
+            for idx in range(len(indices)):
+                val = input_perm_matrix[i, idx]
+                entry_str += self.input_quant.get_bin_str_from_int(val, is_cuda=self.cuda)
+            res_str = self.output_quant.get_bin_str_from_int(bin_output_states[i], is_cuda=self.cuda)
+            m0 = int(entry_str, 2)
+            for j in range(output_bits):
+                # res_str is MSB-first; bit j from LSB is at index (output_bits - 1 - j)
+                bit_j = int(res_str[output_bits - 1 - j])
+                lut_values[j] |= (bit_j << m0)
+        return cat_input_bitwidth, output_bits, lut_values
+
     def gen_layer_verilog(self, module_prefix, directory, generate_bench: bool = True):
         _, input_bitwidth = self.input_quant.get_scale_factor_bits(self.cuda)
         _, output_bitwidth = self.output_quant.get_scale_factor_bits(self.cuda)
@@ -199,27 +230,30 @@ class SparseLinearNeq(nn.Module):
         layer_contents = f"module {module_prefix} (input [{total_input_bits-1}:0] M0, output [{total_output_bits-1}:0] M1);\n\n"
         output_offset = 0
         for index in range(self.out_features):
-            module_name = f"{module_prefix}_N{index}"
+            neuron_name = f"{module_prefix}_N{index}"
             indices, _, _, _ = self.neuron_truth_tables[index]
-            neuron_verilog = self.gen_neuron_verilog(
-                index, module_name
-            )  # Generate the contents of the neuron verilog
-            with open(f"{directory}/{module_name}.v", "w") as f:
-                f.write(neuron_verilog)
+            cat_input_bitwidth, output_bits, lut_values = self._compute_lut_values(index)
+            num_entries = 1 << cat_input_bitwidth
             if generate_bench:
-                neuron_bench = self.gen_neuron_bench(
-                    index, module_name
-                )  # Generate the contents of the neuron verilog
-                with open(f"{directory}/{module_name}.bench", "w") as f:
+                neuron_bench = self.gen_neuron_bench(index, neuron_name)
+                with open(f"{directory}/{neuron_name}.bench", "w") as f:
                     f.write(neuron_bench)
-            connection_string = generate_neuron_connection_verilog(
-                indices, input_bitwidth
-            )  # Generate the string which connects the synapses to this neuron
-            wire_name = f"{module_name}_wire"
-            connection_line = f"wire [{len(indices)*input_bitwidth-1}:0] {wire_name} = {{{connection_string}}};\n"
-            inst_line = f"{module_name} {module_name}_inst (.M0({wire_name}), .M1(M1[{output_offset+output_bitwidth-1}:{output_offset}]));\n\n"
-            layer_contents += connection_line + inst_line
-            output_offset += output_bitwidth
+            connection_string = generate_neuron_connection_verilog(indices, input_bitwidth)
+            wire_name = f"{neuron_name}_wire"
+            layer_contents += f"wire [{cat_input_bitwidth-1}:0] {wire_name} = {{{connection_string}}};\n"
+            hex_digits = num_entries // 4
+            if output_bits == 1:
+                formatted = _format_lut_hex(lut_values[0], hex_digits)
+                layer_contents += f"wire [{num_entries-1}:0] {neuron_name}_lut = {num_entries}'h{formatted};\n"
+                layer_contents += f"assign M1[{output_offset}] = {neuron_name}_lut[{wire_name}];\n\n"
+            else:
+                for j in range(output_bits):
+                    formatted = _format_lut_hex(lut_values[j], hex_digits)
+                    layer_contents += f"wire [{num_entries-1}:0] {neuron_name}_lut_{j} = {num_entries}'h{formatted};\n"
+                for j in range(output_bits):
+                    layer_contents += f"assign M1[{output_offset+j}] = {neuron_name}_lut_{j}[{wire_name}];\n"
+                layer_contents += "\n"
+            output_offset += output_bits
         layer_contents += "endmodule"
         with open(f"{directory}/{module_prefix}.v", "w") as f:
             f.write(layer_contents)
@@ -228,27 +262,8 @@ class SparseLinearNeq(nn.Module):
     # TODO: Move the verilog string templates to elsewhere
     # TODO: Move this to another class
     def gen_neuron_verilog(self, index, module_name):
-        (
-            indices,
-            input_perm_matrix,
-            float_output_states,
-            bin_output_states,
-        ) = self.neuron_truth_tables[index]
-        _, input_bitwidth = self.input_quant.get_scale_factor_bits(self.cuda)
-        _, output_bitwidth = self.output_quant.get_scale_factor_bits(self.cuda)
-        cat_input_bitwidth = len(indices) * input_bitwidth
-        lut_string = ""
-        num_entries = input_perm_matrix.shape[0]
-        for i in range(num_entries):
-            entry_str = ""
-            for idx in range(len(indices)):
-                val = input_perm_matrix[i, idx]
-                entry_str += self.input_quant.get_bin_str_from_int(val, is_cuda=self.cuda)
-            res_str = self.output_quant.get_bin_str_from_int(bin_output_states[i], is_cuda=self.cuda)
-            lut_string += f"\t\t\t{int(cat_input_bitwidth)}'b{entry_str}: M1r = {int(output_bitwidth)}'b{res_str};\n"
-        return generate_lut_verilog(
-            module_name, int(cat_input_bitwidth), int(output_bitwidth), lut_string
-        )
+        cat_input_bitwidth, output_bits, lut_values = self._compute_lut_values(index)
+        return generate_lut_verilog(module_name, cat_input_bitwidth, output_bits, lut_values)
 
     # TODO: Move the string templates to bench.py
     # TODO: Move this to another class
